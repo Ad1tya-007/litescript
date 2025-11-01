@@ -83,22 +83,22 @@ function extractBalancedExpr(str, keywordPos, keyword) {
 }
 
 /**
- * Finds the rightmost occurrence of a keyword followed by parenthesis
+ * Finds the rightmost occurrence of array property access (arr.method)
  * This helps process inner expressions first in nested calls
- * Ensures the keyword is not part of a method call (e.g., not matching .reverse())
  */
-function findRightmostPattern(str, keyword) {
-  // Use negative lookbehind to ensure keyword is not preceded by a dot
-  // This prevents matching method calls like .reverse()
-  const pattern = new RegExp(`(?<!\\.)\\b${keyword}\\s*\\(`, 'g');
+function findRightmostProperty(str, property) {
+  // Find the rightmost occurrence of .property
+  const escapedProperty = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `\\.\\s*${escapedProperty}(?=\\s*(?:\\(|;|,|\\]|\\)|$|\\s))`,
+    'g'
+  );
 
   let match;
   let lastMatch = null;
   let lastIndex = -1;
 
-  // Reset regex
   pattern.lastIndex = 0;
-
   while ((match = pattern.exec(str)) !== null) {
     if (match.index > lastIndex) {
       lastIndex = match.index;
@@ -106,7 +106,74 @@ function findRightmostPattern(str, keyword) {
     }
   }
 
-  return lastMatch ? lastMatch.index : -1;
+  if (lastMatch) {
+    // Extract the expression immediately before this .property
+    // Walk backwards from the dot to find the expression
+    const dotPos = lastMatch.index;
+    let pos = dotPos - 1;
+
+    // Skip whitespace before the dot
+    while (pos >= 0 && /\s/.test(str[pos])) {
+      pos--;
+    }
+
+    // Now walk backwards to find where the expression starts
+    // We want to capture: identifier, or expression ending with ] or )
+    let exprEnd = pos + 1;
+    let exprStart = exprEnd;
+
+    if (pos >= 0 && (str[pos] === ']' || str[pos] === ')')) {
+      // Expression ends with bracket/paren - find matching opening
+      const closing = str[pos];
+      let depth = 1;
+      exprStart = pos;
+      pos--;
+      while (pos >= 0 && depth > 0) {
+        if (str[pos] === (closing === ']' ? '[' : '(')) {
+          depth--;
+          if (depth === 0) {
+            exprStart = pos;
+            // Check if there's more before this (like [...expr])
+            if (pos > 2 && str.substring(pos - 3, pos) === '[...') {
+              exprStart = pos - 3;
+            }
+            break;
+          }
+        } else if (str[pos] === closing) {
+          depth++;
+        }
+        pos--;
+      }
+    } else {
+      // Regular identifier - walk backwards to find its start
+      // Stop at operators, assignment, or other non-identifier characters
+      while (pos >= 0 && /[\w$]/.test(str[pos])) {
+        pos--;
+      }
+      exprStart = pos + 1;
+    }
+
+    // Skip any whitespace before the expression, but stop at operators/assignment
+    // Important: exprStart currently points to the first char of identifier
+    // We want to include whitespace before it, but stop at operators
+    let finalStart = exprStart;
+    while (finalStart > 0 && /\s/.test(str[finalStart - 1])) {
+      finalStart--;
+    }
+    // If there's an operator before the whitespace, don't skip it
+    if (
+      finalStart > 0 &&
+      /[=+\-*\/<>!&|?:,;\[\{\(]/.test(str[finalStart - 1])
+    ) {
+      // Operator found - expression starts after it (don't include whitespace after operator)
+      finalStart = exprStart; // Keep original start
+    }
+    exprStart = finalStart;
+
+    const arrExpr = str.substring(exprStart, exprEnd).trim();
+    return { index: exprStart, arrExpr };
+  }
+  return null;
 }
 
 /**
@@ -121,45 +188,64 @@ function transformArrays(source) {
   const maxPasses = 100; // Prevent infinite loops
   let pass = 0;
 
-  // Single-argument transformation rules
-  const oneArgTransformations = [
+  // Array property transformations (arr.property)
+  const propertyTransformations = [
     {
-      keyword: 'sorted',
-      replacement: (expr) => `[...${expr}].sort((a,b)=>a-b)`,
+      property: 'sort',
+      replacement: (arrExpr) => `[...${arrExpr}].sort((a,b)=>a-b)`,
     },
-    { keyword: 'reverse', replacement: (expr) => `[...${expr}].reverse()` },
-    { keyword: 'unique', replacement: (expr) => `[...new Set(${expr})]` },
     {
-      keyword: 'sum',
-      replacement: (expr) => `${expr}.reduce((a,b) => a + b, 0)`,
+      property: 'reverse',
+      replacement: (arrExpr) => `[...${arrExpr}].reverse()`,
     },
-    { keyword: 'max', replacement: (expr) => `Math.max(...${expr})` },
-    { keyword: 'min', replacement: (expr) => `Math.min(...${expr})` },
-    { keyword: 'len', replacement: (expr) => `${expr}.length` },
     {
-      keyword: 'mul',
-      replacement: (expr) => `${expr}.reduce((a,b) => a * b, 1)`,
+      property: 'unique',
+      replacement: (arrExpr) => `[...new Set(${arrExpr})]`,
+    },
+    {
+      property: 'sum',
+      replacement: (arrExpr) => `${arrExpr}.reduce((a,b) => a + b, 0)`,
+    },
+    {
+      property: 'max',
+      replacement: (arrExpr) => `Math.max(...${arrExpr})`,
+    },
+    {
+      property: 'min',
+      replacement: (arrExpr) => `Math.min(...${arrExpr})`,
+    },
+    {
+      property: 'len',
+      replacement: (arrExpr) => `${arrExpr}.length`,
+    },
+    {
+      property: 'mul',
+      replacement: (arrExpr) => `${arrExpr}.reduce((a,b) => a * b, 1)`,
     },
   ];
 
-  // Two-argument transformation rules
-  // Note: filter! must come before filter since it contains "filter"
-  const twoArgTransformations = [
+  // Two-argument property transformations (arr.property(value))
+  // Only handle simple value comparisons, let normal JS handle functions
+  const twoArgPropertyTransformations = [
     {
-      keyword: 'filter!',
-      replacement: (arr, n) => `[...${arr}].filter(v => v !== ${n})`,
+      property: 'filter!',
+      replacement: (arrExpr, value) =>
+        `[...${arrExpr}].filter(v => v !== ${value})`,
     },
     {
-      keyword: 'filter',
-      replacement: (arr, n) => `[...${arr}].filter(v => v === ${n})`,
+      property: 'filter',
+      replacement: (arrExpr, value) =>
+        `[...${arrExpr}].filter(v => v === ${value})`,
     },
     {
-      keyword: 'count',
-      replacement: (arr, n) => `[...${arr}].filter(v => v === ${n}).length`,
+      property: 'count!',
+      replacement: (arrExpr, value) =>
+        `[...${arrExpr}].filter(v => v !== ${value}).length`,
     },
     {
-      keyword: 'count!',
-      replacement: (arr, n) => `[...${arr}].filter(v => v !== ${n}).length`,
+      property: 'count',
+      replacement: (arrExpr, value) =>
+        `[...${arrExpr}].filter(v => v === ${value}).length`,
     },
   ];
 
@@ -168,63 +254,152 @@ function transformArrays(source) {
     pass++;
     changed = false;
 
-    // Try each transformation, processing from rightmost (inner-most) first
-    for (const { keyword, replacement } of oneArgTransformations) {
-      const index = findRightmostPattern(output, keyword);
-      if (index !== -1) {
-        const expr = extractBalancedExpr(output, index, keyword);
-        if (expr) {
-          const transformed = replacement(expr.content);
-          output =
-            output.substring(0, expr.start) +
-            transformed +
-            output.substring(expr.end);
-          changed = true;
-          break; // Process one transformation per pass
+    // Process property transformations (arr.property), rightmost first
+    // First, find all matches across all properties to get the absolute rightmost
+    let allMatches = [];
+    for (const { property, replacement } of propertyTransformations) {
+      const match = findRightmostProperty(output, property);
+      if (match) {
+        // Skip if arrExpr is already a transformed expression (starts with [...)
+        // This prevents infinite loops where we keep wrapping already-wrapped expressions
+        if (match.arrExpr.trim().startsWith('[...')) {
+          continue;
+        }
+
+        const patternToMatch = `${match.arrExpr.replace(
+          /[.*+?^${}()|[\]\\]/g,
+          '\\$&'
+        )}\\s*\\.\\s*${property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`;
+        const fullMatch = output
+          .substring(match.index)
+          .match(new RegExp(`^${patternToMatch}`));
+        if (fullMatch) {
+          const afterProperty = output.substring(
+            match.index + fullMatch[0].length
+          );
+
+          // Check if it should be transformed
+          let shouldTransform = false;
+          // If afterProperty is empty or starts with whitespace/newline, it's end of expression
+          if (!afterProperty || /^\s/.test(afterProperty)) {
+            // Check if it's followed by parentheses with no args
+            const parenMatch = afterProperty.match(/^\s*\(([^)]*)\)/);
+            if (parenMatch && !parenMatch[1].trim()) {
+              shouldTransform = true;
+            } else if (!parenMatch || !parenMatch[0]) {
+              // No parentheses, or just whitespace - transform
+              shouldTransform = true;
+            }
+          } else {
+            const firstChar = afterProperty[0];
+            if (firstChar === '(') {
+              const parenMatch = afterProperty.match(/^\s*\(([^)]*)\)/);
+              if (parenMatch && !parenMatch[1].trim()) {
+                shouldTransform = true;
+              }
+            } else if (
+              firstChar === ';' ||
+              firstChar === ',' ||
+              firstChar === ']' ||
+              firstChar === ')'
+            ) {
+              shouldTransform = true;
+            }
+          }
+
+          if (shouldTransform) {
+            // Calculate the end position (where the property ends)
+            const dotPos = output.indexOf('.', match.index);
+            const endPos =
+              dotPos !== -1
+                ? dotPos + 1 + property.length
+                : match.index + fullMatch[0].length;
+            // Check if there are empty parentheses
+            const hasEmptyParens = afterProperty.match(/^\s*\(\)/);
+            allMatches.push({
+              index: match.index,
+              endIndex: endPos,
+              endIndexWithParens: hasEmptyParens
+                ? endPos + hasEmptyParens[0].length
+                : endPos,
+              arrExpr: match.arrExpr,
+              property,
+              replacement,
+            });
+          }
         }
       }
     }
 
-    // Handle two-argument functions
-    if (!changed) {
-      let rightmostMatch = null;
-      let rightmostIndex = -1;
+    // Find the absolute rightmost match
+    let rightmostMatch = null;
+    if (allMatches.length > 0) {
+      // Sort by index descending to get rightmost
+      allMatches.sort((a, b) => b.index - a.index);
+      const match = allMatches[0];
+      rightmostMatch = {
+        start: match.index,
+        end: match.endIndexWithParens,
+        replacement: match.replacement(match.arrExpr),
+      };
+    }
 
-      // Find the rightmost (innermost) two-argument transformation
-      for (const { keyword, replacement } of twoArgTransformations) {
-        const pattern = new RegExp(
-          `(?<!\\.)\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`,
-          'g'
-        );
-        let match;
+    if (rightmostMatch) {
+      output =
+        output.substring(0, rightmostMatch.start) +
+        rightmostMatch.replacement +
+        output.substring(rightmostMatch.end);
+      changed = true;
+      continue;
+    }
 
-        pattern.lastIndex = 0;
-        while ((match = pattern.exec(output)) !== null) {
-          if (match.index > rightmostIndex) {
-            const expr = extractBalancedExpr(output, match.index, keyword);
-            if (expr) {
-              // Parse two arguments (handling nested parentheses)
-              const args = parseArguments(expr.content);
-              if (args.length === 2) {
-                rightmostIndex = match.index;
-                rightmostMatch = {
-                  start: expr.start,
-                  end: expr.end,
-                  replacement: replacement(args[0], args[1]),
-                };
-              }
+    // Handle two-argument property calls (arr.property(value))
+    for (const { property, replacement } of twoArgPropertyTransformations) {
+      const match = findRightmostProperty(output, property);
+      if (match && match.index > rightmostIndex) {
+        const fullMatch = output
+          .substring(match.index)
+          .match(
+            new RegExp(
+              `^${match.arrExpr.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                '\\$&'
+              )}\\s*\\.\\s*${property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`
+            )
+          );
+        if (fullMatch) {
+          const afterProperty = output.substring(
+            match.index + fullMatch[0].length
+          );
+          const parenMatch = afterProperty.match(/^\s*\(([^)]+)\)/);
+
+          if (parenMatch) {
+            const args = parseArguments(parenMatch[1]);
+            // Only transform if single simple argument (not a function)
+            if (
+              args.length === 1 &&
+              !args[0].includes('=>') &&
+              !args[0].includes('function')
+            ) {
+              rightmostIndex = match.index;
+              rightmostMatch = {
+                start: match.index,
+                end: match.index + fullMatch[0].length + parenMatch[0].length,
+                replacement: replacement(match.arrExpr, args[0]),
+              };
+              break;
             }
           }
         }
       }
+    }
 
-      if (rightmostMatch) {
-        output =
-          output.substring(0, rightmostMatch.start) +
-          rightmostMatch.replacement +
-          output.substring(rightmostMatch.end);
-        changed = true;
-      }
+    if (rightmostMatch) {
+      output =
+        output.substring(0, rightmostMatch.start) +
+        rightmostMatch.replacement +
+        output.substring(rightmostMatch.end);
+      changed = true;
     }
   }
 

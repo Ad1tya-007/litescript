@@ -1,5 +1,8 @@
-let arr = [5, 5, 4, 3, 2, 1];
-console.log(arr)
-arr = sorted(arr)
+arr = [5, 5, 4, 3, 2, 1];
+arr2 = arr.sort
+arr3 = arr.unique
+max = arr.max
+min = arr.min
 
-console.log(arr);
+log( arr , arr2)
+

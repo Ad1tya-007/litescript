@@ -4,6 +4,9 @@
  */
 
 const { transformArrays } = require('./features/arrays');
+const { transformCodeBlocks } = require('./features/codeblocks');
+const { transformVariables } = require('./features/variables');
+const { transformLog } = require('./features/log');
 
 /**
  * Transpiles litescript source code to JavaScript
@@ -13,8 +16,17 @@ const { transformArrays } = require('./features/arrays');
 function transpile(source) {
   let output = source;
 
+  // Apply variable transformations first (remove let/const, auto-declare)
+  output = transformVariables(output);
+
+  // Apply code block transformations (adds braces based on indentation)
+  output = transformCodeBlocks(output);
+
   // Apply array transformations
   output = transformArrays(output);
+
+  // Apply log transformations (enhanced console.log)
+  output = transformLog(output);
 
   return output;
 }
