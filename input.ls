@@ -3,6 +3,10 @@ arr2 = arr.sort
 arr3 = arr.unique
 max = arr.max
 min = arr.min
+range = range(0,4)
+includes = arr.includes(5)
 
-log( arr , arr2)
-
+log(arr,arr2)
+log(range)
+log(min, max,arr3)
+log(includes)

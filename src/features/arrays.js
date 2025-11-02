@@ -35,54 +35,6 @@ function parseArguments(content) {
 }
 
 /**
- * Extracts a balanced expression from parentheses starting at a keyword position
- * Handles nested parentheses correctly
- */
-function extractBalancedExpr(str, keywordPos, keyword) {
-  let i = keywordPos;
-
-  // Skip past the keyword
-  if (keyword) {
-    // Escape special regex characters in keyword, but handle special cases
-    const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // For keywords ending with !, we need to match without word boundary after !
-    const keywordPattern = keyword.endsWith('!')
-      ? new RegExp(`^\\b${escapedKeyword.slice(0, -1)}\\b!`)
-      : new RegExp(`^\\b${escapedKeyword}\\b`);
-    const keywordMatch = str.substring(i).match(keywordPattern);
-    if (!keywordMatch) return null;
-    i += keywordMatch[0].length;
-  }
-
-  // Skip whitespace to find opening parenthesis
-  while (i < str.length && /\s/.test(str[i])) {
-    i++;
-  }
-
-  if (i >= str.length || str[i] !== '(') return null;
-
-  const start = i;
-  let depth = 1;
-  i++;
-
-  // Find matching closing parenthesis
-  while (i < str.length && depth > 0) {
-    if (str[i] === '(') depth++;
-    else if (str[i] === ')') depth--;
-    i++;
-  }
-
-  if (depth === 0) {
-    return {
-      content: str.substring(start + 1, i - 1).trim(),
-      start: keywordPos, // Return start of keyword for replacement
-      end: i,
-    };
-  }
-  return null;
-}
-
-/**
  * Finds the rightmost occurrence of array property access (arr.method)
  * This helps process inner expressions first in nested calls
  */
@@ -188,218 +140,324 @@ function transformArrays(source) {
   const maxPasses = 100; // Prevent infinite loops
   let pass = 0;
 
-  // Array property transformations (arr.property)
-  const propertyTransformations = [
+  // Unified array of all transformations
+  // type: 'property' for arr.property, 'standalone' for function calls
+  // argCount: number of arguments (or array for multiple valid counts)
+  // replacement: function that takes appropriate arguments
+  const transformations = [
+    // Zero-argument property transformations (arr.property)
     {
-      property: 'sort',
-      replacement: (arrExpr) => `[...${arrExpr}].sort((a,b)=>a-b)`,
+      name: 'sort',
+      type: 'property',
+      argCount: 0,
+      replacement: (arrExpr) => `${arrExpr}.sort((a,b)=>a-b)`,
     },
     {
-      property: 'reverse',
-      replacement: (arrExpr) => `[...${arrExpr}].reverse()`,
+      name: 'reverse',
+      type: 'property',
+      argCount: 0,
+      replacement: (arrExpr) => `${arrExpr}.reverse()`,
     },
     {
-      property: 'unique',
+      name: 'unique',
+      type: 'property',
+      argCount: 0,
       replacement: (arrExpr) => `[...new Set(${arrExpr})]`,
     },
     {
-      property: 'sum',
+      name: 'sum',
+      type: 'property',
+      argCount: 0,
       replacement: (arrExpr) => `${arrExpr}.reduce((a,b) => a + b, 0)`,
     },
     {
-      property: 'max',
+      name: 'max',
+      type: 'property',
+      argCount: 0,
       replacement: (arrExpr) => `Math.max(...${arrExpr})`,
     },
     {
-      property: 'min',
+      name: 'min',
+      type: 'property',
+      argCount: 0,
       replacement: (arrExpr) => `Math.min(...${arrExpr})`,
     },
     {
-      property: 'len',
+      name: 'len',
+      type: 'property',
+      argCount: 0,
       replacement: (arrExpr) => `${arrExpr}.length`,
     },
     {
-      property: 'mul',
+      name: 'mul',
+      type: 'property',
+      argCount: 0,
       replacement: (arrExpr) => `${arrExpr}.reduce((a,b) => a * b, 1)`,
+    },
+    // One-argument property transformations (arr.property(value))
+    {
+      name: 'filter!',
+      type: 'property',
+      argCount: 1,
+      replacement: (arrExpr, value) => `${arrExpr}.filter(v => v !== ${value})`,
+    },
+    {
+      name: 'filter',
+      type: 'property',
+      argCount: 1,
+      replacement: (arrExpr, value) => `${arrExpr}.filter(v => v === ${value})`,
+    },
+    {
+      name: 'count!',
+      type: 'property',
+      argCount: 1,
+      replacement: (arrExpr, value) =>
+        `${arrExpr}.filter(v => v !== ${value}).length`,
+    },
+    {
+      name: 'count',
+      type: 'property',
+      argCount: 1,
+      replacement: (arrExpr, value) =>
+        `${arrExpr}.filter(v => v === ${value}).length`,
+    },
+    // Note: includes is not included here because arr.includes(value) is already valid JavaScript
+    // Standalone function transformations (range(x, y) or range(x, y, increment))
+    {
+      name: 'range',
+      type: 'standalone',
+      argCount: [2, 3], // Can accept 2 or 3 arguments
+      replacement: (args) => {
+        if (args.length === 3) {
+          // range(x, y, increment)
+          const absIncrement = `Math.abs(${args[2]})`;
+          return `((${args[0]}) < (${args[1]}) ? Array.from({ length: Math.ceil((((${args[1]}) - (${args[0]})) / ${absIncrement})) }, (_, i) => (+${args[0]}) + i * ${absIncrement}) : Array.from({ length: Math.ceil((((${args[0]}) - (${args[1]})) / ${absIncrement})) }, (_, i) => (+${args[0]}) - i * ${absIncrement}))`;
+        } else if (args.length === 2) {
+          // range(x, y) - backward compatibility
+          return `((${args[0]}) < (${args[1]}) ? Array.from({ length: (${args[1]}) - (${args[0]}) }, (_, i) => (+${args[0]}) + i) : Array.from({ length: (${args[0]}) - (${args[1]}) }, (_, i) => (+${args[0]}) - i))`;
+        }
+        return null; // Explicit return for invalid arg counts
+      },
     },
   ];
 
-  // Two-argument property transformations (arr.property(value))
-  // Only handle simple value comparisons, let normal JS handle functions
-  const twoArgPropertyTransformations = [
-    {
-      property: 'filter!',
-      replacement: (arrExpr, value) =>
-        `[...${arrExpr}].filter(v => v !== ${value})`,
-    },
-    {
-      property: 'filter',
-      replacement: (arrExpr, value) =>
-        `[...${arrExpr}].filter(v => v === ${value})`,
-    },
-    {
-      property: 'count!',
-      replacement: (arrExpr, value) =>
-        `[...${arrExpr}].filter(v => v !== ${value}).length`,
-    },
-    {
-      property: 'count',
-      replacement: (arrExpr, value) =>
-        `[...${arrExpr}].filter(v => v === ${value}).length`,
-    },
-  ];
+  // Helper function to check if argument count matches
+  function matchesArgCount(actualCount, expectedCount) {
+    if (Array.isArray(expectedCount)) {
+      return expectedCount.includes(actualCount);
+    }
+    return actualCount === expectedCount;
+  }
+
+  // Helper function to check if arguments are simple (not functions)
+  function areSimpleArgs(args) {
+    // For standalone functions with 0 args, we still want to allow them
+    // (though range requires at least 2 args, this is more general)
+    if (args.length === 0) return false;
+    return args.every(
+      (arg) => !arg.includes('=>') && !arg.includes('function')
+    );
+  }
 
   // Apply transformations in multiple passes to handle nesting
   while (changed && pass < maxPasses) {
     pass++;
     changed = false;
 
-    // Process property transformations (arr.property), rightmost first
-    // First, find all matches across all properties to get the absolute rightmost
-    let allMatches = [];
-    for (const { property, replacement } of propertyTransformations) {
-      const match = findRightmostProperty(output, property);
-      if (match) {
-        // Skip if arrExpr is already a transformed expression (starts with [...)
-        // This prevents infinite loops where we keep wrapping already-wrapped expressions
-        if (match.arrExpr.trim().startsWith('[...')) {
-          continue;
+    // Collect all matches from all transformations
+    const allMatches = [];
+
+    // Process all transformations in a single loop
+    for (const transform of transformations) {
+      if (transform.type === 'standalone') {
+        // Handle standalone function calls (e.g., range(x, y, increment))
+        // Create a new pattern each time to avoid state issues
+        const pattern = new RegExp(
+          `\\b${transform.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`,
+          'g'
+        );
+        const matches = [];
+        // Reset lastIndex and find all matches
+        pattern.lastIndex = 0;
+        let m;
+        while ((m = pattern.exec(output)) !== null) {
+          matches.push(m);
+          // Prevent infinite loop on zero-length matches
+          if (m[0].length === 0) {
+            pattern.lastIndex++;
+          }
         }
 
-        const patternToMatch = `${match.arrExpr.replace(
-          /[.*+?^${}()|[\]\\]/g,
-          '\\$&'
-        )}\\s*\\.\\s*${property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`;
-        const fullMatch = output
-          .substring(match.index)
-          .match(new RegExp(`^${patternToMatch}`));
-        if (fullMatch) {
-          const afterProperty = output.substring(
-            match.index + fullMatch[0].length
-          );
+        // Process from right to left (rightmost first)
+        for (let i = matches.length - 1; i >= 0; i--) {
+          const funcMatch = matches[i];
+          const funcStartPos = funcMatch.index;
 
-          // Check if it should be transformed
-          let shouldTransform = false;
-          // If afterProperty is empty or starts with whitespace/newline, it's end of expression
-          if (!afterProperty || /^\s/.test(afterProperty)) {
-            // Check if it's followed by parentheses with no args
-            const parenMatch = afterProperty.match(/^\s*\(([^)]*)\)/);
-            if (parenMatch && !parenMatch[1].trim()) {
-              shouldTransform = true;
-            } else if (!parenMatch || !parenMatch[0]) {
-              // No parentheses, or just whitespace - transform
-              shouldTransform = true;
-            }
-          } else {
-            const firstChar = afterProperty[0];
-            if (firstChar === '(') {
-              const parenMatch = afterProperty.match(/^\s*\(([^)]*)\)/);
-              if (parenMatch && !parenMatch[1].trim()) {
-                shouldTransform = true;
+          // Find matching closing parenthesis
+          let pos = funcStartPos + funcMatch[0].length;
+          let depth = 1;
+          let inString = false;
+          let stringChar = '';
+          let funcEndPos = pos;
+
+          while (pos < output.length && depth > 0) {
+            const char = output[pos];
+            if (!inString) {
+              if (char === '"' || char === "'" || char === '`') {
+                inString = true;
+                stringChar = char;
+              } else if (char === '(' || char === '[' || char === '{') {
+                depth++;
+              } else if (char === ')' || char === ']' || char === '}') {
+                depth--;
+                if (depth === 0) {
+                  funcEndPos = pos + 1;
+                  break;
+                }
               }
-            } else if (
-              firstChar === ';' ||
-              firstChar === ',' ||
-              firstChar === ']' ||
-              firstChar === ')'
-            ) {
-              shouldTransform = true;
+            } else {
+              if (char === stringChar) {
+                inString = false;
+              }
             }
+            pos++;
           }
 
-          if (shouldTransform) {
-            // Calculate the end position (where the property ends)
-            const dotPos = output.indexOf('.', match.index);
-            const endPos =
-              dotPos !== -1
-                ? dotPos + 1 + property.length
-                : match.index + fullMatch[0].length;
-            // Check if there are empty parentheses
-            const hasEmptyParens = afterProperty.match(/^\s*\(\)/);
-            allMatches.push({
-              index: match.index,
-              endIndex: endPos,
-              endIndexWithParens: hasEmptyParens
-                ? endPos + hasEmptyParens[0].length
-                : endPos,
-              arrExpr: match.arrExpr,
-              property,
-              replacement,
-            });
-          }
-        }
-      }
-    }
+          if (depth === 0) {
+            const argsStr = output.substring(
+              funcStartPos + funcMatch[0].length,
+              funcEndPos - 1
+            );
+            const args = parseArguments(argsStr);
 
-    // Find the absolute rightmost match
-    let rightmostMatch = null;
-    if (allMatches.length > 0) {
-      // Sort by index descending to get rightmost
-      allMatches.sort((a, b) => b.index - a.index);
-      const match = allMatches[0];
-      rightmostMatch = {
-        start: match.index,
-        end: match.endIndexWithParens,
-        replacement: match.replacement(match.arrExpr),
-      };
-    }
-
-    if (rightmostMatch) {
-      output =
-        output.substring(0, rightmostMatch.start) +
-        rightmostMatch.replacement +
-        output.substring(rightmostMatch.end);
-      changed = true;
-      continue;
-    }
-
-    // Handle two-argument property calls (arr.property(value))
-    for (const { property, replacement } of twoArgPropertyTransformations) {
-      const match = findRightmostProperty(output, property);
-      if (match && match.index > rightmostIndex) {
-        const fullMatch = output
-          .substring(match.index)
-          .match(
-            new RegExp(
-              `^${match.arrExpr.replace(
-                /[.*+?^${}()|[\]\\]/g,
-                '\\$&'
-              )}\\s*\\.\\s*${property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`
-            )
-          );
-        if (fullMatch) {
-          const afterProperty = output.substring(
-            match.index + fullMatch[0].length
-          );
-          const parenMatch = afterProperty.match(/^\s*\(([^)]+)\)/);
-
-          if (parenMatch) {
-            const args = parseArguments(parenMatch[1]);
-            // Only transform if single simple argument (not a function)
             if (
-              args.length === 1 &&
-              !args[0].includes('=>') &&
-              !args[0].includes('function')
+              matchesArgCount(args.length, transform.argCount) &&
+              areSimpleArgs(args)
             ) {
-              rightmostIndex = match.index;
-              rightmostMatch = {
-                start: match.index,
-                end: match.index + fullMatch[0].length + parenMatch[0].length,
-                replacement: replacement(match.arrExpr, args[0]),
-              };
-              break;
+              const replacement = transform.replacement(args);
+              if (replacement) {
+                allMatches.push({
+                  start: funcStartPos,
+                  end: funcEndPos,
+                  replacement,
+                });
+                break; // Only process rightmost match for this transform
+              }
+            }
+          }
+        }
+      } else {
+        // Handle property transformations (arr.property)
+        const propMatch = findRightmostProperty(output, transform.name);
+        if (propMatch) {
+          // Skip if arrExpr is already a transformed expression (starts with [...)
+          if (propMatch.arrExpr.trim().startsWith('[...')) {
+            continue;
+          }
+
+          const patternToMatch = `${propMatch.arrExpr.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            '\\$&'
+          )}\\s*\\.\\s*${transform.name.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            '\\$&'
+          )}`;
+          const fullMatch = output
+            .substring(propMatch.index)
+            .match(new RegExp(`^${patternToMatch}`));
+
+          if (fullMatch) {
+            const afterProperty = output.substring(
+              propMatch.index + fullMatch[0].length
+            );
+
+            if (transform.argCount === 0) {
+              // Zero-argument property (arr.property or arr.property())
+              let shouldTransform = false;
+              if (!afterProperty || /^\s/.test(afterProperty)) {
+                const parenMatch = afterProperty.match(/^\s*\(([^)]*)\)/);
+                if (parenMatch && !parenMatch[1].trim()) {
+                  shouldTransform = true;
+                } else if (!parenMatch || !parenMatch[0]) {
+                  shouldTransform = true;
+                }
+              } else {
+                const firstChar = afterProperty[0];
+                if (firstChar === '(') {
+                  const parenMatch = afterProperty.match(/^\s*\(([^)]*)\)/);
+                  if (parenMatch && !parenMatch[1].trim()) {
+                    shouldTransform = true;
+                  }
+                } else if (
+                  firstChar === ';' ||
+                  firstChar === ',' ||
+                  firstChar === ']' ||
+                  firstChar === ')'
+                ) {
+                  shouldTransform = true;
+                }
+              }
+
+              if (shouldTransform) {
+                const dotPos = output.indexOf('.', propMatch.index);
+                const endPos =
+                  dotPos !== -1
+                    ? dotPos + 1 + transform.name.length
+                    : propMatch.index + fullMatch[0].length;
+                const hasEmptyParens = afterProperty.match(/^\s*\(\)/);
+                const finalEndPos = hasEmptyParens
+                  ? endPos + hasEmptyParens[0].length
+                  : endPos;
+
+                const replacement = transform.replacement(propMatch.arrExpr);
+                allMatches.push({
+                  start: propMatch.index,
+                  end: finalEndPos,
+                  replacement,
+                });
+              }
+            } else {
+              // One-argument property (arr.property(value))
+              const parenMatch = afterProperty.match(/^\s*\(([^)]+)\)/);
+              if (parenMatch) {
+                const args = parseArguments(parenMatch[1]);
+                if (
+                  matchesArgCount(args.length, transform.argCount) &&
+                  areSimpleArgs(args)
+                ) {
+                  const replacement = transform.replacement(
+                    propMatch.arrExpr,
+                    args[0]
+                  );
+                  allMatches.push({
+                    start: propMatch.index,
+                    end:
+                      propMatch.index +
+                      fullMatch[0].length +
+                      parenMatch[0].length,
+                    replacement,
+                  });
+                }
+              }
             }
           }
         }
       }
     }
 
-    if (rightmostMatch) {
-      output =
-        output.substring(0, rightmostMatch.start) +
-        rightmostMatch.replacement +
-        output.substring(rightmostMatch.end);
-      changed = true;
+    // Find the absolute rightmost match across all transformations
+    if (allMatches.length > 0) {
+      // Sort by start index descending to get rightmost
+      allMatches.sort((a, b) => b.start - a.start);
+      const rightmostMatch = allMatches[0];
+
+      if (rightmostMatch && rightmostMatch.replacement) {
+        output =
+          output.substring(0, rightmostMatch.start) +
+          rightmostMatch.replacement +
+          output.substring(rightmostMatch.end);
+        changed = true;
+      }
     }
   }
 
