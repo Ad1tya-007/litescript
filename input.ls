@@ -10,3 +10,9 @@ log(arr,arr2)
 log(range)
 log(min, max,arr3)
 log(includes)
+
+help():
+    log("Help function is called");
+    log(arr);
+
+help();

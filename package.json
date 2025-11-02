@@ -1,20 +1,20 @@
 {
   "name": "litescript",
   "version": "1.0.0",
-  "description": "A JavaScript transpiler for competitive programming",
+  "description": "A JavaScript transpiler",
   "main": "src/transpiler.js",
   "bin": {
     "lite": "./bin/lite.js"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "lite test"
   },
   "keywords": [
     "transpiler",
     "javascript",
-    "competitive-programming"
+    "programming"
   ],
-  "author": "",
+  "author": "Aditya",
   "license": "ISC",
   "dependencies": {
     "chokidar": "^3.6.0"

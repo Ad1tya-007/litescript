@@ -11,7 +11,22 @@ function parseArgs() {
   const result = {
     inputFile: null,
     watch: false,
+    test: false,
+    testFeature: null,
+    testName: null,
   };
+
+  // Check if first argument is "test"
+  if (args.length > 0 && args[0] === 'test') {
+    result.test = true;
+    if (args.length >= 2) {
+      result.testFeature = args[1];
+      if (args.length >= 3) {
+        result.testName = args[2];
+      }
+    }
+    return result;
+  }
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -35,6 +50,7 @@ function parseArgs() {
 function printHelp() {
   console.log(`
 Usage: lite <input.ls> [options]
+       lite test <feature> <test_name>
 
 Options:
   -w, --watch    Watch for file changes and re-execute
@@ -43,6 +59,7 @@ Options:
 Examples:
   lite main.ls
   lite main.ls --watch
+  lite test arrays range
 `);
 }
 
@@ -71,10 +88,36 @@ function executeFile(inputFile) {
 }
 
 /**
+ * Runs a test file
+ */
+function runTest(testFeature, testName) {
+  if (!testFeature || !testName) {
+    console.error('Error: Usage: lite test <feature> <test_name>');
+    console.error('Example: lite test arrays range');
+    process.exit(1);
+  }
+
+  const testPath = `tests/${testFeature}/${testName}.ls`;
+  
+  if (!fs.existsSync(testPath)) {
+    console.error(`Error: Test file ${testPath} does not exist`);
+    process.exit(1);
+  }
+
+  console.log(`Running test: ${testPath}\n`);
+  executeFile(testPath);
+}
+
+/**
  * Main CLI entry point
  */
 function main() {
-  const { inputFile, watch: watchMode } = parseArgs();
+  const { inputFile, watch: watchMode, test, testFeature, testName } = parseArgs();
+
+  if (test) {
+    runTest(testFeature, testName);
+    return;
+  }
 
   if (!inputFile) {
     console.error('Error: No input file specified');
