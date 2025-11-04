@@ -39,6 +39,18 @@ function transformCodeBlocks(source) {
         }
       }
     }
+    
+    // Check for if statements without parentheses (after loops transformation)
+    // Pattern: if condition (where condition doesn't start with '(')
+    const ifMatch = trimmed.match(/^\s*if\s+(.+)$/);
+    if (ifMatch && !trimmed.includes('(')) {
+      // Make sure it's not already a complete statement (ends with semicolon or brace)
+      const condition = ifMatch[1].trim();
+      if (!condition.endsWith(';') && !condition.endsWith('{') && !condition.endsWith('}')) {
+        return true;
+      }
+    }
+    
     return false;
   }
   

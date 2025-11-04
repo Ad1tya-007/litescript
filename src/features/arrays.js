@@ -221,7 +221,6 @@ function transformArrays(source) {
       replacement: (arrExpr, value) =>
         `${arrExpr}.filter(v => v === ${value}).length`,
     },
-    // Note: includes is not included here because arr.includes(value) is already valid JavaScript
     // Standalone function transformations (range(x, y) or range(x, y, increment))
     {
       name: 'range',

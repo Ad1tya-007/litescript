@@ -8,6 +8,7 @@ const { transformCodeBlocks } = require('./features/codeblocks');
 const { transformVariables } = require('./features/variables');
 const { transformLog } = require('./features/log');
 const { transformFunctions } = require('./features/functions');
+const { transformLoops } = require('./features/loops');
 
 /**
  * Transpiles litescript source code to JavaScript
@@ -17,7 +18,10 @@ const { transformFunctions } = require('./features/functions');
 function transpile(source) {
   let output = source;
 
-  // Apply variable transformations first (remove let/const, auto-declare)
+  // Apply loop transformations first (for i in 0...5, repeat 10, etc.)
+  output = transformLoops(output);
+
+  // Apply variable transformations (remove let/const, auto-declare)
   output = transformVariables(output);
 
   // Apply function transformations (functionName(): to function functionName() {)
